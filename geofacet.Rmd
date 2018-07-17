@@ -1,0 +1,213 @@
+---
+title: "Geofacetting"
+author: "Al Firrell"
+date: "11 July 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+A quick summary of [geofacetting](http://ryanhafen.com/blog/geofacet) and the `geofacet` R package.
+
+## Visualising Geographic Data
+
+There are a lot of options available to us when plotting data with a geographic dimension, but great challenges too.  Precise geography can give a nice visual reference point, but can also skew result interpretation.  We're so used to seeing value encoded in size (e.g. in a bar chart, or a heatmap) that we can't un-see it: larger regions will just stand out more than smaller ones.  And if we use coloured regions on a map (a choropleth), we can only convey a single measure, and it's hard to gauge the precise values.
+
+Alternatives to classic choropleths include:
+
+* cartograms - where the region is stretched or compressed to reflect the value of a measure
+* rectangular or hexagonal tile maps - where each region is of equal size
+* tile cartograms - a combination of the above, where the region is composed of small hex tiles, with number of tiles driven by an additional measure
+* faceted choropleths or tile maps - using small multiples of the same chart, to split along another variable
+
+More detail and more options are presented in the slide pack [Geospatial Data Visualisation in R](http://intranet/Banknav/IML.asp?svr=BOE-DMS&db=Analytical&id=7549004&v=1) and at <http://ryanhafen.com/blog/geofacet>
+
+## Geofacetting
+
+Each of the above methods presents a single measure, and uses filled colour to encode values.  These can be hard to compare when non-contiguous, and hard to place a precise value on.  If the aim of your visualisation is to convey:
+
+* precision of value
+* easy comparison between distant regions, or
+* multiple measures 
+
+and these are more important than *exact* geographical location, you might want to try out **Geofacetting**.
+
+> To *geofacet* is to take data representing different geographic entities and apply a visualization method to the data for each entity, with the resulting set of visualizations being laid out in a grid that mimics the original geographic topology as closely as possible.
+
+### When *not* to use geofacetting?
+
+Before we see it in action, it's important to observe when this *wouldn't* be a good technique.  From the blog link above:
+
+* *Sometimes the original geography has entities that are so irregularly organized and have such large size disparities that it is difficult to represent it as a regular grid.*
+* *Sometimes exact preservation of entity boundaries and neighbors is essential.*
+* *A geofacet grid is only meaningful if the person already has an understanding of the underlying original geography. One way to help with this issue in the future would be to have the option for the original geography to be plotted as a reference alongside the geofaceted plot.*
+* *Geofaceting is only useful for data that represents values recorded for different geographic entities. For example, geofaceting is not appropriate for geographical data representing a spatial point process.*
+
+## Constructing a geofacetted plot
+
+Geofacetting is incredibly easy with the `geofacet` package.
+
+```{r load_the_package, message=FALSE}
+#install.packages("geofacet")
+library(geofacet)
+library(tidyverse)
+```
+### Get some data
+
+We'll use some data on construction of affordable housing in London, split by borough.
+
+```{r get_data}
+housing = readxl::read_excel("dclg-affordable-housing-borough.xls", sheet = "data")
+housing = 
+  housing %>% 
+  select(-`Former ONS code`, -`2016-2017p`) %>% 
+  rename(code = `Current ONS code`, name = `Area name`) %>% 
+  filter(!code %in% c("London", "England")) %>% 
+  gather(year, value, -code, -name)
+
+housing
+```
+
+### Find the right layout
+
+`geofacet` lays out data "geographically" with the help of a pre-defined "grid" - a data.frame telling geofacet how to lay out the regions. The package comes with grids for lots of countries, continents, and some cities.  We'll use the `london_boroughs_grid`.
+
+```{r grid}
+london_boroughs_grid %>% head
+```
+
+We can list the full set of grids:
+
+```{r all_grids}
+get_grid_names() %>% sort()
+```
+
+The package itself has functions to help with the creation, preview and submission (`grid_submit()`) of new grids for inclusion in the package[^1].  The grid creation function can attempt to automatically create a grid based on a shape file, GeoJSON, or SpatialPolygonsDataFrame.
+
+
+### Plot the chart
+
+Let's plot affordable housing over two years.  To use geofacetting, simply call `facet_geo()` with a ggplot object, just like if we were using `facet_wrap`.  Pass in the variable to facet by, and the grid we want to use, plus any other relevant arguments.
+
+```{r simple_plot}
+housing %>% 
+  filter(year %in% c("2014-15", "2015-16")) %>% 
+  ggplot(aes(year, value, fill = year)) +
+  geom_col() +
+  facet_geo(~code,
+            grid = "london_boroughs_grid",
+            label = "name")
+```
+
+We see how the data has been laid out in an approximately London-shaped layout.  `facet_geo` works like `ggplot`'s inbuilt `facet_wrap` and `facet_grid`, splitting the data by the variable(s) in the data (here, `code`), and applies the grid layout given by the `grid` argument, here the `london_boroughs_grid`.  We can display the `name` field from the grid for use in the facet header.
+
+#### Tarting it up
+With a bit more ggplot styling, we can get this looking much nicer:
+
+```{r posh_plot, fig.height = 8, fig.width = 10}
+newTheme = 
+  theme_minimal() +
+  theme(strip.text = element_blank(),
+        axis.title = element_blank(),
+        axis.text.y = element_blank(),
+        axis.text.x = element_text(size = 6, colour = "azure3"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.background = element_rect(fill = "whitesmoke", colour = "whitesmoke"),
+        legend.text = element_text(size = 8, colour = "azure4"),
+        legend.title = element_blank(),
+        legend.title.align = 0.5,
+        legend.position = c(0.95, 0.95),
+        plot.title = element_text(size = 14, hjust = 0.5)
+        )
+
+plotData = 
+  housing %>% 
+  mutate(name = str_wrap(name, width = 12),
+         year = factor(year),
+         year = forcats::fct_rev(year)) %>% 
+  filter(year %in% c("2014-15", "2015-16")) %>% 
+  ## create the label just once for each facet
+  group_by(code) %>%
+  mutate(nameLabel = if_else(row_number() == 1, name, as.character(NA))) %>%
+  ungroup()
+
+maxValue = max(plotData$value)
+
+plotData %>% 
+  ggplot() +
+  geom_col(aes(year, value, fill = year)) +
+  coord_flip() + ## horizontal bars
+  scale_y_continuous(breaks = seq(0, maxValue, by = signif(maxValue / 3, 1))) +
+  scale_fill_brewer(palette = "Accent") +
+  facet_geo(~code,
+            grid = "london_boroughs_grid") +
+  ## add the borough name in the background, so it doesn't break up the flow as much
+  geom_text(mapping = aes(x = 0, y = maxValue, label = nameLabel), 
+            size = 3, color = "azure4", hjust = 1, vjust = -0.3) +
+  labs(title = "Total affordable housing completions in London boroughs",
+       caption = "Source: https://data.london.gov.uk/dataset/dclg-affordable-housing-supply-borough") +
+  newTheme
+
+
+```
+
+The overall layout is fairly nice - lots of relationships sit nicely, with most boroughs abutting the most of their true neighbours.  A few are necessarily slightly mobile:  Newham and Waltham Forest lose their boundary, as do Hillingdon and Harrow.  As is to be expected, the larger the size disparity, the more the grid will be distorting - for example, grid-Bromley is much smaller than real-Bromley, so can't hope to touch Bexley, Greenwich, Lewisham, Southwark and Croydon (and corner onto Lambeth) as it does in reality.  
+
+> The more your geography has size mismatch and odd shapes, the more the grid will misrepresent reality.  You decide how much that matters.
+
+***STOP PRESS** : Typing this up, I notice there is an error in the London grid (as opposed to a subjective judgement call of grid position.)  Do you see it?  [Try comparing with this map](https://cloud.githubusercontent.com/assets/13021448/26399784/3133d684-4076-11e7-8eac-1e74d023bf18.jpg)...yep, Richmond-u-T and Kingston-u-T are the wrong way round!  Richmond is the more northerly, touching Hounslow and Hammersmith; Kingston is the more southerly, touching Merton and Sutton.  I've raised a GitHub issue with the corrected data...*
+
+
+
+## UK?  OK
+
+There's a grid for the [UK NUTS1 regions](https://user-images.githubusercontent.com/1275592/32032394-d394b24a-b9bb-11e7-91e8-fe4da69ba005.jpg) included in the package.  It's OK, though it suffers from there really being slightly too few regions, so you lose the characteristic shape of the UK somewhat.  
+
+```{r uk, fig.height=8}
+## Mock up some data based on 
+fakeData = 
+  uk_regions1 %>% 
+  select(name) %>%
+  mutate(`Letters` = stringr::str_length(name),
+         `Unique Letters` = 
+           purrr::map_int(name, 
+                          ~length(unique(stringr::str_split(., "")[[1]])))
+         )
+
+fakeData %>% 
+  gather(series, value, -name) %>% 
+  ggplot(aes(series, value, fill = series)) +
+  geom_col() +
+  coord_flip() +
+  facet_geo(~name, 
+            grid = "uk_regions1", 
+            move_axes = F,
+            labeller = label_wrap_gen(width = 15)) +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        strip.text = element_text(size = 6, margin = c(-1, 0, -1, 0, "cm")))
+
+```
+
+
+## Europe: The Final Letdown?
+
+Just to prove that sometimes these don't look so good, consider this geofacet for Europe:
+
+```{r eu}
+
+eu_gdp %>% 
+  filter(code != "LU") %>% 
+  ggplot(aes(year, gdp_pc)) +
+  geom_line() +
+  facet_geo(~code,
+            grid = "eu_grid1")
+```
+
+The Europe countries grid supplied with the geofacet package look a bit odd, simply because the countries it has to render are so very different in size: it has to represent Luxembourg, Belgium and Malta the same size as Germany, France and Spain, and thus finding a good location for each which remains intuitive to the eye can be taxing.
+
+[^1]: *Should we wish to add our own custom grids without submitting to the central public repo, this should be possible, as all the code is on GitHub.  It may well only require re-generating the .dta file included in the compiled package with one which contains our own grids, and may be doable with functions exposed by the package without digging too deep into the full source code.* 
